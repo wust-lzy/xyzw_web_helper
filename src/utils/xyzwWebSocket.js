@@ -215,17 +215,13 @@ export function registerDefaultCommands(reg) {
     .register("saltroad_getsaltroadwartotalrank")
     .register("legionwar_getgoldmonthwarrank")
     .register("legion_getopponent")
-    .register("club_getinfo")
-    .register("club_gettargetteam")
-    .register("club_attack")
-    .register("club_attackmonster")
-    .register("club_taskclaim")
     .register("legion_getbattlefield")
     .register("legion_claimpayloadtask")
     .register("legion_claimpayloadtaskprogress")
     .register("saltroad_getwartype")
     .register("saltroad_getsaltroadwargrouprank")
     .register("league_getbattlefield")
+    .register("league_getgroupopponent")
     .register("legion_signup") // 盐场报名
     // 营地挑战 / 俱乐部战
     .register("club_getinfo")
@@ -234,6 +230,9 @@ export function registerDefaultCommands(reg) {
     .register("club_getdefenserecord", { targetId: 0, targetIsMirror: false })
     .register("club_getgrouprank")
     .register("club_getrolerank")
+    .register("club_attack")
+    .register("club_attackmonster")
+    .register("club_taskclaim")
 
     // 邮件
     .register("mail_getlist", { category: [0, 4, 5], lastId: 0, size: 60 })
