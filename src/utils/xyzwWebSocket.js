@@ -4,8 +4,9 @@
  */
 
 import { $CacheManager } from "@/stores/cache";
-import { bonProtocol, g_utils } from "./bonProtocol.js";
-import { wsLogger, gameLogger } from "./logger.js";
+import { g_utils } from "./bonProtocol.js";
+import { sleep } from "./helperTaskRunner.js";
+import { gameLogger, wsLogger } from "./logger.js";
 
 /**
  * 错误码映射表
@@ -30,8 +31,6 @@ const errorCodeMap = {
   1500020: "能量不足",
   2300070: "未加入俱乐部",
   3500020: "没有可领取的奖励",
-  12000050: "今日发车次数已达上限",
-  12000060: "不在发车时间内",
   400190: "没有可领取的签到奖励",
   1000020: "今天已经领取过奖励了",
   3300050: "购买数量超出限制",
@@ -71,7 +70,7 @@ const formatBodyForLog = (body) => {
 
   if (typeof body === "object") {
     const isNumericObject = Object.keys(body).every(
-      (key) => !Number.isNaN(parseInt(key)),
+      (key) => !Number.isNaN(Number.parseInt(key)),
     );
     if (isNumericObject) {
       return `[BON:Object:${Object.keys(body).length}]`;
@@ -162,6 +161,7 @@ export function registerDefaultCommands(reg) {
     .register("system_signinreward")
     .register("system_mysharecallback", { isSkipShareCard: true, type: 2 })
     .register("system_custom", { key: "", value: 0 })
+    .register("system_claimcdkreward", { key: "", platformType: "h5" })
 
     // 任务相关
     .register("task_claimdailypoint", { taskId: 1 })
@@ -194,6 +194,12 @@ export function registerDefaultCommands(reg) {
     .register("store_buy", { goodsId: 1 })
     .register("store_purchase", { goodsId: 1 })
     .register("store_refresh", { storeId: 1 })
+    .register("store_getpurchase")
+    .register("store_setpurchase", {
+      purchaseCnt: 1,
+      purchaseItemList: [],
+    })
+    .register("store_getpurchasehistory")
 
     // 军团
     .register("legion_getinfo")
@@ -211,6 +217,7 @@ export function registerDefaultCommands(reg) {
     .register("legion_resetresearch")
 
     .register("legion_getinfobyid")
+    .register("legion_applyjoin", { legionId: 0 })
     .register("legion_getarearank")
     .register("saltroad_getsaltroadwartotalrank")
     .register("legionwar_getgoldmonthwarrank")
@@ -335,6 +342,14 @@ export function registerDefaultCommands(reg) {
     // 活动/任务
     .register("activity_get")
     .register("activity_recyclewarorderrewardclaim")
+    // 玄武赐福活动
+    .register("activity_warorderget")
+    .register("activity_warordertaskclaim")
+    .register("activity_warorderrewardclaim")
+    .register("activity_getlotteryinfo")
+    .register("activity_lottery")
+    .register("activity_claimsignreward")
+    .register("activity_commonbuygoods")
     .register("legion_getpayloadtask")
     .register("legion_getpayloadkillrecord")
     .register("legion_getpayloadbf")
@@ -350,16 +365,6 @@ export function registerDefaultCommands(reg) {
 
     // 扭蛋相关
     .register("gacha_drawreward", { num: 1, isGroup: false })
-
-    // 车辆相关
-    .register("car_getrolecar")
-    .register("car_refresh", { carId: 0 })
-    .register("car_claim", { carId: 0 })
-    .register("car_send", { carId: 0, helperId: 0, text: "" })
-    .register("car_getmemberhelpingcnt")
-    .register("car_getmemberrank")
-    .register("car_research")
-    .register("car_claimpartconsumereward")
 
     // 功法
     .register("legacy_getinfo")
@@ -422,7 +427,10 @@ export function registerDefaultCommands(reg) {
     .register("apex_getroleinfo")
     .register("apex_getguesslist", { scheduleId: 0, idx: 0 })
     .register("apex_guess", { teamId: "" })
-    .register("apex_get64oppomap", { scheduleId: 0, groupId: 0 });
+    .register("apex_get64oppomap", { scheduleId: 0, groupId: 0 })
+    // —— APEX 逐鹿盐山：按需注册，仅登记组件实际调用的命令 ——
+    .register("apex_getvotelist")
+    .register("apex_vote", { round: 0, teamId: "" });
   registry.commands.set(
     "fight_startareaarena",
     (ack = 0, seq = 0, params = {}) => {
@@ -718,7 +726,10 @@ export class XyzwWebSocketClient {
     if (typeof body === "object" && body.constructor === Object) {
       // 检查是否是数字键的对象（例如 {"0": 8, "1": 2, ...}）
       const keys = Object.keys(body);
-      return keys.length > 0 && keys.every((key) => !isNaN(parseInt(key)));
+      return (
+        keys.length > 0 &&
+        keys.every((key) => !Number.isNaN(+Number.parseInt(key)))
+      );
     }
 
     return false;
@@ -739,14 +750,14 @@ export class XyzwWebSocketClient {
     // 对象格式的数字数组转换为Uint8Array
     if (typeof body === "object" && body.constructor === Object) {
       const keys = Object.keys(body)
-        .map((k) => parseInt(k))
+        .map((k) => Number.parseInt(k))
         .sort((a, b) => a - b);
       if (keys.length > 0) {
         const maxIndex = Math.max(...keys);
-        const arr = new Array(maxIndex + 1).fill(0);
+        const arr = Array.from({ length: maxIndex + 1 }, () => 0);
         for (const [key, value] of Object.entries(body)) {
-          const index = parseInt(key);
-          if (!isNaN(index) && typeof value === "number") {
+          const index = Number.parseInt(key);
+          if (!Number.isNaN(+index) && typeof value === "number") {
             arr[index] = value;
           }
         }
@@ -881,7 +892,13 @@ export class XyzwWebSocketClient {
     return task;
   }
 
-  /** Promise 版发送 */
+  /**
+   * Queue a command and wait for its sequence or legacy command response.
+   * @param {string} cmd Registered protocol command.
+   * @param {object} params Command body.
+   * @param {number} timeoutMs Timeout measured from queue admission, in milliseconds.
+   * @returns {Promise<unknown>} Response body; rejects on a server error or timeout.
+   */
   sendWithPromise(cmd, params = {}, timeoutMs = 5000) {
     return new Promise((resolve, reject) => {
       if (!this.connected && !this.socket) {
@@ -899,6 +916,7 @@ export class XyzwWebSocketClient {
         delete this.promises[requestSeq];
         reject(new Error(`请求超时: ${cmd} (${timeoutMs}ms)`));
       }, timeoutMs);
+      this.promises[requestSeq].timer = timer;
 
       // 发送消息，直接传递seq
       this.send(cmd, params, {
@@ -1044,6 +1062,7 @@ export class XyzwWebSocketClient {
     // 优先使用resp字段进行响应匹配（新的正确方式）
     if (packet.resp !== undefined && this.promises[packet.resp]) {
       const promiseData = this.promises[packet.resp];
+      clearTimeout(promiseData.timer);
       delete this.promises[packet.resp];
 
       // 获取响应数据，优先使用 rawData（ProtoMsg 自动解码），然后 decodedBody（手动解码），最后 body
@@ -1092,6 +1111,8 @@ export class XyzwWebSocketClient {
       apex_getguesslistresp: "apex_getguesslist",
       apex_guessresp: "apex_guess",
       apex_get64oppomapresp: "apex_get64oppomap",
+      apex_getvotelistresp: "apex_getvotelist",
+      apex_voteresp: "apex_vote",
       hero_recruitresp: "hero_recruit",
       friend_batchresp: "friend_batch",
       system_claimhanguprewardresp: "system_claimhangupreward",
@@ -1112,6 +1133,9 @@ export class XyzwWebSocketClient {
       presetteam_getinforesp: "presetteam_getinfo",
       mail_claimallattachmentresp: "mail_claimallattachment",
       store_buyresp: "store_purchase",
+      store_getpurchaseresp: "store_getpurchase",
+      store_setpurchaseresp: "store_setpurchase",
+      store_getpurchasehistoryresp: "store_getpurchasehistory",
       system_getdatabundleverresp: "system_getdatabundlever",
       tower_claimrewardresp: "tower_claimreward",
       fight_starttowerresp: "fight_starttower",
@@ -1138,6 +1162,7 @@ export class XyzwWebSocketClient {
       warguess_getguesscoinrewardresp: "warguess_getguesscoinreward",
       league_getbattlefieldresp: "league_getbattlefield",
       league_getgroupopponentresp: "league_getgroupopponent",
+      legion_applyjoinresp: "legion_applyjoin",
       legion_signupresp: "legion_signup",
       legion_payloadsignupresp: "legion_payloadsignup",
       legionmatch_rolesignupresp: "legionmatch_rolesignup",
@@ -1167,18 +1192,17 @@ export class XyzwWebSocketClient {
       club_attackresp: "club_attack",
       club_attackmonsterresp: "club_attackmonster",
       club_taskclaimresp: "club_taskclaim",
-      // 车辆相关响应映射
-      car_getrolecarresp: "car_getrolecar",
-      car_refreshresp: "car_refresh",
-      car_claimresp: "car_claim",
-      car_sendresp: "car_send",
-      car_getmemberhelpingcntresp: "car_getmemberhelpingcnt",
-      car_getmemberrankresp: "car_getmemberrank",
-      car_researchresp: "car_research",
-      car_claimpartconsumerewardresp: "car_claimpartconsumereward",
       role_gettargetteamresp: "role_gettargetteam",
-      activity_warorderclaimresp: "activity_recyclewarorderrewardclaim",
-      arena_getarearankresp: "arena_getarearank",
+      // 玄武赐福活动响应映射
+      activity_warordergetresp: "activity_warorderget",
+      activity_warorderclaimresp: [
+        "activity_warorderrewardclaim",
+        "activity_warordertaskclaim",
+        "activity_recyclewarorderrewardclaim",
+      ],
+      activity_getlotteryinforesp: "activity_getlotteryinfo",
+      activity_lotteryresp: "activity_lottery",
+      activity_rewardresp: "activity_claimsignreward",
       bosstower_gethelprankresp: "bosstower_gethelprank",
       // 功法相关响应映射
       legacy_getinforesp: "legacy_getinfo",
@@ -1209,6 +1233,7 @@ export class XyzwWebSocketClient {
         "lordweapon_changedefaultweapon",
       ],
       syncrewardresp: [
+        "activity_commonbuygoods",
         "system_buygold",
         "discount_claimreward",
         "card_claimreward",
@@ -1216,6 +1241,7 @@ export class XyzwWebSocketClient {
         "genie_sweep",
         "genie_buysweep",
         "system_signinreward",
+        "system_claimcdkreward",
         "dungeon_selecthero",
         "artifact_exchange",
         "hero_exchange",
@@ -1236,6 +1262,7 @@ export class XyzwWebSocketClient {
     for (const [requestId, promiseData] of Object.entries(this.promises)) {
       // 检查 Promise 是否匹配当前响应的任一原始命令
       if (originalCmds.includes(promiseData.originalCmd)) {
+        clearTimeout(promiseData.timer);
         delete this.promises[requestId];
 
         // 获取响应数据，优先使用 rawData（ProtoMsg 自动解码），然后 decodedBody（手动解码），最后 body
@@ -1269,6 +1296,11 @@ export class XyzwWebSocketClient {
 
   /** 清理定时器 */
   _clearTimers() {
+    for (const [id, request] of Object.entries(this.promises)) {
+      clearTimeout(request.timer);
+      delete this.promises[id];
+      request.reject(new Error("WebSocket 连接已关闭"));
+    }
     if (this.heartbeatTimer) {
       clearInterval(this.heartbeatTimer);
       this.heartbeatTimer = null;
