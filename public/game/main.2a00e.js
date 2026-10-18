@@ -364,7 +364,9 @@ window.parseRemoteBundleVers = function (settingsObj) {
 }
 
 window.loadRemoteBundleVers = async function () {
-  const manifestUrl = `https://xxz-xyzw.hortorgames.com/login/manifest?platform=hortor&version=0.32.0-android`
+  // manifest 按安装包版本分发代码，旧参数即使禁用缓存也只会拿到旧客户端。
+  // 0.36.0 分支包含「咸来入镜」（PHOTO / 10156）；保留服务端返回的整套 bundle 版本。
+  const manifestUrl = `https://xxz-xyzw.hortorgames.com/login/manifest?platform=hortor&version=0.36.0-android`
   console.log('[remoteAssets] POST manifest', manifestUrl)
 
   const settingsRes = await fetch(
